@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 import warnings
@@ -9,20 +10,11 @@ import setuptools.command.build_ext
 import wheel.bdist_wheel
 
 _this_dir = os.path.dirname(os.path.abspath(__file__))
-_clib_dir = os.path.join(_this_dir, 'python', 'opencc', 'clib')
 _build_dir = os.path.join(_this_dir, 'build', 'python')
 
 _cmake_file = os.path.join(_this_dir, 'CMakeLists.txt')
 _author_file = os.path.join(_this_dir, 'AUTHORS')
 _readme_file = os.path.join(_this_dir, 'README.md')
-
-try:
-    sys.path.insert(0, os.path.join(_this_dir, 'python'))
-
-    import opencc  # noqa
-    _libopencc_built = True
-except ImportError:
-    _libopencc_built = False
 
 
 def get_version_info():
@@ -70,20 +62,13 @@ def get_long_description():
         return f.read().decode('utf-8')
 
 
-def build_libopencc():
-    if _libopencc_built:
-        return  # Skip building binary file
+def build_libopencc(output_path):
     print('building libopencc into %s' % _build_dir)
 
     is_windows = sys.platform == 'win32'
 
     # Make build directories
-    if is_windows:
-        subprocess.call('md {}'.format(_build_dir), shell=True)
-        subprocess.call('md {}'.format(_clib_dir), shell=True)
-    else:
-        subprocess.call('mkdir -p {}'.format(_build_dir), shell=True)
-        subprocess.call('mkdir -p {}'.format(_clib_dir), shell=True)
+    os.makedirs(_build_dir, exist_ok=True)
 
     # Configure
     cmake_args = [
@@ -93,14 +78,14 @@ def build_libopencc():
         '-DENABLE_BENCHMARK:BOOL=OFF',
         '-DBUILD_PYTHON:BOOL=ON',
         '-DCMAKE_BUILD_TYPE=Release',
-        '-DCMAKE_INSTALL_PREFIX={}'.format(_clib_dir),
-        '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={}'.format(_clib_dir),
+        '-DCMAKE_INSTALL_PREFIX={}'.format(output_path),
+        '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={}'.format(output_path),
         '-DPYTHON_EXECUTABLE={}'.format(sys.executable),
     ]
 
     if is_windows:
         cmake_args += \
-            ['-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE={}'.format(_clib_dir)]
+            ['-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE={}'.format(output_path)]
         if sys.maxsize > 2**32:
             cmake_args += ['-A', 'x64']
 
@@ -117,11 +102,6 @@ def build_libopencc():
     errno = subprocess.call(cmd)
     assert errno == 0, 'Build failed'
 
-    # Empty __init__.py file has to be created
-    # to make opencc.clib a module
-    with open('{}/__init__.py'.format(_clib_dir), 'w'):
-        pass
-
 
 class OpenCCExtension(setuptools.Extension, object):
     def __init__(self, name, sourcedir=''):
@@ -131,8 +111,12 @@ class OpenCCExtension(setuptools.Extension, object):
 
 class BuildExtCommand(setuptools.command.build_ext.build_ext, object):
     def build_extension(self, ext):
+        if self.inplace:
+            output_path = os.path.join(_this_dir, 'python', 'opencc', 'clib')
+        else:
+            output_path = os.path.abspath(os.path.join(self.build_lib, 'opencc', 'clib'))
         if isinstance(ext, OpenCCExtension):
-            build_libopencc()
+            build_libopencc(output_path)
         else:
             super(BuildExtCommand, self).build_extension(ext)
 
@@ -157,10 +141,10 @@ class BDistWheelCommand(wheel.bdist_wheel.bdist_wheel, object):
                 return 'macosx-11.0-{}'.format(machine)
             else:
                 raise NotImplementedError
-                
+
         if os.name == 'posix':
             _, _, _, _, machine = os.uname()
-            return 'manylinux1-{}'.format(machine)
+            return 'manylinux2014-{}'.format(machine)
 
         warnings.warn(
             'Windows macos and linux are all not detected, '
@@ -178,6 +162,10 @@ packages = ['opencc', 'opencc.clib']
 version_info = get_version_info()
 author_info = get_author_info()
 
+setup_requires = []
+if not shutil.which('cmake'):
+    setup_requires.append('cmake')
+
 setuptools.setup(
     name='OpenCC',
     version=version_info,
@@ -190,15 +178,12 @@ setuptools.setup(
 
     packages=packages,
     package_dir={'opencc': 'python/opencc'},
-    package_data={str('opencc'): [
-        'clib/opencc_clib*',
-        'clib/share/opencc/*',
-    ]},
     ext_modules=[OpenCCExtension('opencc.clib.opencc_clib', 'python')],
     cmdclass={
         'build_ext': BuildExtCommand,
         'bdist_wheel': BDistWheelCommand
     },
+    setup_requires=setup_requires,
 
     classifiers=[
         'Development Status :: 5 - Production/Stable',
